@@ -28,12 +28,20 @@ SERVERS = ['http://127.0.0.1:5000',
            'https://salvadelapuente.com:8088']
 
 
-def get_a_server():
+def get_a_server(labid=None, exid=None):
     for server in SERVERS:
         try:
-            response = requests.get(url=server+'/')
+            response = requests.get(url=server + '/')
             response.raise_for_status()
             if response.json().get('Qiskit Global Summer School') == '2020':
+                if labid and exid:
+                    available_validations = response.json().get('available validations')
+                    if available_validations is None:
+                        return server
+                    if [labid, exid] in available_validations:
+                        return server
+                    else:
+                        continue
                 return server
         except Exception:
             pass
@@ -71,10 +79,10 @@ def check_answer(answer, lab_name, exercise_name, participant_name, participant_
     is_update = False
 
     if answer is None:
-        result_msg = '🤐  Skip'
+        result_msg = '🤐 Skip'
         result_msg += ': answer variable is None' if verbose else ''
     elif not isinstance(answer, (QuantumCircuit, PulseQobj)):
-        result_msg = '🤐  Skip'
+        result_msg = '🤐 Skip'
         result_msg += ': answer variable should be a QuantumCircuit or a PulseQobj (not %s)' % \
                       type(answer) if verbose else ''
     else:
@@ -91,14 +99,19 @@ def check_answer(answer, lab_name, exercise_name, participant_name, participant_
 
         if session:
             data['session'] = session
-        answer = send_request(data, endpoint)
-        is_update = answer['is_update']
-        session = answer['session']
-        if answer['is_valid']:
-            result_msg = '🎉  Correct'
+        answer_response = send_request(data, endpoint)
+        is_update = answer_response.get('is_update', True)
+        session = answer_response.get('session')
+        if answer_response.get('is_valid'):
+            result_msg = '🎉 Correct'
         else:
-            result_msg = '❌  Failed'
-            result_msg += ': %s' % answer['cause'] if verbose else ''
+            cause = answer_response.get('cause')
+            if cause is None or 'owner does not match request owner' in cause:
+                print(cause, '...Retrying with a fresh session...')
+                return check_answer(answer, lab_name, exercise_name, participant_name,
+                                    participant_email, endpoint=endpoint, verbose=verbose)
+            result_msg = '❌ Failed'
+            result_msg += ': %s' % answer_response['cause'] if verbose else ''
     return "%s/%s - %s" % (lab_name, exercise_name, result_msg), session, is_update
 
 
@@ -125,7 +138,7 @@ def commit_answer(labid, email, session, server):
             'session': session}
     answer = send_request(data, server + '/commit-answers')
     if answer.get('is_committed'):
-        print('📝  Our records, so far, are:')
+        print('📝 Our records, so far, are:')
         print_record(answer, 'Correct answers')
         print_record(answer, 'Incorrect answers')
     else:
@@ -156,19 +169,21 @@ def create_session(answerfile):
 def grade(answer=None, name=None, email=None, labid=None, exerciseid=None,
           server=None, answerfile=None, force_commit=False):
     session = create_session(answerfile)
-    server = server if server else get_a_server()
     validate_name_email(name, email, silent=True)
 
-    if server is None:
-        print("🚫  Either you is too unreliable or the grading servers are down right now.")
-        return
-
     if labid is None:
-        print("🚫  In which lab are you?.")
+        print("🚫 In which lab are you?.")
         return
 
     if exerciseid is None:
-        print("🚫  In which exercise are you?.")
+        print("🚫 In which exercise are you?.")
+        return
+
+    print("Grading...")
+
+    server = server if server else get_a_server(labid, exerciseid)
+    if server is None:
+        print("🚫 Either you is too unreliable or the grading servers are down right now.")
         return
 
     result, session, is_update = check_answer(answer,
@@ -178,14 +193,15 @@ def grade(answer=None, name=None, email=None, labid=None, exerciseid=None,
                                               email,
                                               server + '/validate-answer',
                                               session=session)
-    with open(os.path.join(dir_path, 'answers.enc'), 'w') as answer_file:
-        answer_file.write(session)
+    if session:
+        with open(os.path.join(dir_path, 'answers.enc'), 'w') as answer_file:
+            answer_file.write(session)
     print(result)
 
     if is_update:
         force_commit = True
         if "Correct" in result:
-            print("🎊  Hurray! You have a new correct answer! Let's submit it.")
+            print("🎊 Hurray! You have a new correct answer! Let's submit it.")
 
     if force_commit:
         commit_answer(labid, email, session, server)
@@ -198,7 +214,7 @@ def send_code(filename, server=None):
     server = server if server else get_a_server()
 
     if server is None:
-        print("🚫  Either you is too unreliable or the grading servers are down right now.")
+        print("🚫 Either you is too unreliable or the grading servers are down right now.")
         return
 
     sha1 = hashlib.sha1()
